@@ -19,7 +19,7 @@ service cloud.firestore {
     function isBootstrapAdmin(userId) {
       return signedIn()
         && request.auth.uid == userId
-        && userId == 'EvZ08EH3fDaNYtxQ0VpegPcejmW2'
+        && userId == 'io63zzdfZ7ZkEcaIZIPOv23WV7l2'
         && request.resource.data.active == true
         && request.resource.data.roles.size() == 1
         && request.resource.data.roles[0] == 'admin'

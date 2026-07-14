@@ -7,7 +7,7 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Security', k9: 'K9' };
-const INITIAL_ADMIN_UID = 'EvZ08EH3fDaNYtxQ0VpegPcejmW2';
+const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
 const state = { scope: 'all', selected: null, query: '', view: 'processes', processes: [], documents: [], areas: ['shared'] };
 
 const loginView = document.getElementById('login-view');
