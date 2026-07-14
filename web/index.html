@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>I.S.Se.L. QM-Intranet</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <section id="login-view" class="login-wrap" aria-labelledby="login-title">
+    <form id="login-form" class="login-card">
+      <p class="eyebrow">I.S.Se.L.</p>
+      <h1 id="login-title">QM-Intranet</h1>
+      <p>Bitte melden Sie sich mit Ihrem freigegebenen Benutzerkonto an.</p>
+      <label for="email">E-Mail-Adresse</label>
+      <input id="email" name="email" type="email" autocomplete="email" required>
+      <label for="password">Passwort</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <p id="login-error" class="error" role="alert" hidden></p>
+      <button type="submit">Anmelden</button>
+    </form>
+  </section>
+
+  <div id="app" class="app" hidden>
+    <aside>
+      <p class="brand">I.S.Se.L.<br>QM-Intranet</p>
+      <p class="subbrand">Prozesse · Dokumente · Nachweise</p>
+      <div class="scope" aria-label="Bereich auswählen">
+        <button type="button" class="active" data-scope="all">Freigegebene Bereiche</button>
+        <button type="button" data-scope="security">Security</button>
+        <button type="button" data-scope="k9">K9</button>
+      </div>
+      <p class="nav-title">Ansicht</p>
+      <div class="scope" aria-label="Ansicht auswählen">
+        <button type="button" class="view-tab active" data-view="processes">Prozesse</button>
+        <button type="button" class="view-tab" data-view="library">Dokumentenbibliothek</button>
+      </div>
+      <p class="nav-title" id="process-nav-title">Prozesse</p>
+      <nav id="process-nav" aria-label="Prozessnavigation"></nav>
+      <div class="account"><span id="account-name"></span><button id="logout" type="button">Abmelden</button></div>
+    </aside>
+    <main>
+      <div class="topline">
+        <div>
+          <h1 id="page-title">QM-Prozesse</h1>
+          <p id="page-subtitle" class="muted">Prozesse, Nachweise und gelenkte Dokumentinformationen.</p>
+        </div>
+        <label id="search-wrap" hidden><span class="muted">Dokument suchen</span><br><input id="search" class="search" type="search" placeholder="z. B. Personalfragebogen, Audit, Wachbuch"></label>
+      </div>
+      <p id="app-message" class="message" role="status" hidden></p>
+      <section id="process-view" aria-live="polite"></section>
+      <section id="library-view" aria-labelledby="library-title" hidden>
+        <div class="library-head">
+          <div><h2 id="library-title">Dokumentenbibliothek</h2><p id="library-count" class="muted"></p></div>
+          <p class="muted">Der Status im Originaldokument und die Freigabe nach Dokumentenlenkung sind maßgeblich.</p>
+        </div>
+        <div id="library"></div>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

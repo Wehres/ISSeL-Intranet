@@ -1,0 +1,40 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isQmb() {
+      return signedIn()
+        && ownProfile().data.active == true
+        && ownProfile().data.roles.hasAny(['qmb']);
+    }
+
+    function canReadArea(area) {
+      return signedIn()
+        && ownProfile().data.active == true
+        && (
+          area == 'shared'
+          || ownProfile().data.areas.hasAny([area, 'all'])
+          || isQmb()
+        );
+    }
+
+    match /users/{userId} {
+      allow get: if signedIn() && (request.auth.uid == userId || isQmb());
+      allow list: if isQmb();
+      allow create, update, delete: if isQmb();
+    }
+
+    match /areas/{area}/{collection}/{record} {
+      allow read: if canReadArea(area);
+      allow create, update, delete: if isQmb();
+    }
+  }
+}

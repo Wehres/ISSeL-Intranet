@@ -1,0 +1,12 @@
+{
+  "name": "issel-qm-intranet",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed:build": "node tools/build_firestore_seed.mjs",
+    "seed:import": "node tools/import_firestore_seed.mjs"
+  },
+  "dependencies": {
+    "firebase": "12.16.0"
+  }
+}
