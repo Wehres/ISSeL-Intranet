@@ -14,6 +14,8 @@ const loginView = document.getElementById('login-view');
 const appView = document.getElementById('app');
 const loginForm = document.getElementById('login-form');
 const loginError = document.getElementById('login-error');
+const loginStatus = document.getElementById('login-status');
+const loginButton = loginForm.querySelector('button[type="submit"]');
 const processNav = document.getElementById('process-nav');
 const processNavTitle = document.getElementById('process-nav-title');
 const processView = document.getElementById('process-view');
@@ -34,6 +36,12 @@ const visibleProcesses = () => state.processes.filter(visibleForScope);
 function showMessage(message = '') {
   appMessage.textContent = message;
   appMessage.hidden = !message;
+}
+
+function setLoginStatus(message, busy = false) {
+  loginStatus.textContent = message;
+  loginButton.disabled = busy;
+  loginButton.textContent = busy ? 'Anmeldung läuft …' : 'Anmelden';
 }
 
 function documentLink(documentData) {
@@ -153,6 +161,8 @@ async function openIntranet(user) {
 function errorMessage(error) {
   const messages = {
     'auth/invalid-credential': 'E-Mail-Adresse oder Passwort sind nicht korrekt.',
+    'auth/unauthorized-domain': 'Diese Internetadresse ist in Firebase noch nicht für die Anmeldung freigegeben.',
+    'auth/network-request-failed': 'Die Verbindung zu Firebase konnte nicht hergestellt werden.',
     'auth/too-many-requests': 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.',
     'permission-denied': 'Der Zugriff wurde durch die Berechtigungsregeln abgelehnt.'
   };
@@ -162,12 +172,15 @@ function errorMessage(error) {
 loginForm.addEventListener('submit', async event => {
   event.preventDefault();
   loginError.hidden = true;
+  setLoginStatus('Anmeldung wird geprüft …', true);
   const formData = new FormData(loginForm);
   try {
     await signInWithEmailAndPassword(auth, formData.get('email'), formData.get('password'));
+    setLoginStatus('Anmeldung erfolgreich. Berechtigungen werden geladen …', true);
   } catch (error) {
     loginError.textContent = errorMessage(error);
     loginError.hidden = false;
+    setLoginStatus('Anmeldung nicht möglich. Bitte Meldung oben beachten.');
   }
 });
 
@@ -191,6 +204,7 @@ onAuthStateChanged(auth, async user => {
   if (!user) {
     appView.hidden = true;
     loginView.hidden = false;
+    setLoginStatus('Anmeldung bereit.');
     return;
   }
   try {
@@ -200,5 +214,14 @@ onAuthStateChanged(auth, async user => {
     loginView.hidden = false;
     loginError.textContent = errorMessage(error);
     loginError.hidden = false;
+    setLoginStatus('Anmeldung nicht möglich. Bitte Meldung oben beachten.');
+  }
+});
+
+window.addEventListener('error', event => {
+  if (!loginView.hidden) {
+    loginError.textContent = `Technischer Fehler: ${event.message || 'Anwendung konnte nicht gestartet werden.'}`;
+    loginError.hidden = false;
+    setLoginStatus('Anmeldung nicht möglich. Bitte Meldung oben beachten.');
   }
 });
