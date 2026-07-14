@@ -1,13 +1,12 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js';
-import { initializeFirestore, collection, doc, getDoc, getDocs, setDoc } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
 
 window.qmIntranetReady = true;
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = initializeFirestore(app, { experimentalForceLongPolling: true });
+const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
 const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Security', k9: 'K9' };
 const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
 const PROFILE_WATCHDOG_MS = 10000;
@@ -53,6 +52,97 @@ function withTimeout(promise, milliseconds = 12000) {
     timeout = window.setTimeout(() => reject({ code: 'firestore/timeout' }), milliseconds);
   });
   return Promise.race([promise, timeoutPromise]).finally(() => window.clearTimeout(timeout));
+}
+
+function decodeFirestoreValue(value = {}) {
+  if ('stringValue' in value) return value.stringValue;
+  if ('booleanValue' in value) return value.booleanValue;
+  if ('integerValue' in value) return Number(value.integerValue);
+  if ('doubleValue' in value) return Number(value.doubleValue);
+  if ('timestampValue' in value) return value.timestampValue;
+  if ('nullValue' in value) return null;
+  if ('arrayValue' in value) return (value.arrayValue.values || []).map(decodeFirestoreValue);
+  if ('mapValue' in value) return decodeFirestoreFields(value.mapValue.fields || {});
+  return null;
+}
+
+function decodeFirestoreFields(fields = {}) {
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeFirestoreValue(value)]));
+}
+
+function encodeFirestoreValue(value) {
+  if (value === null) return { nullValue: null };
+  if (Array.isArray(value)) return { arrayValue: { values: value.map(encodeFirestoreValue) } };
+  if (typeof value === 'boolean') return { booleanValue: value };
+  if (Number.isInteger(value)) return { integerValue: String(value) };
+  if (typeof value === 'number') return { doubleValue: value };
+  if (typeof value === 'object') return { mapValue: { fields: encodeFirestoreFields(value) } };
+  return { stringValue: String(value ?? '') };
+}
+
+function encodeFirestoreFields(data) {
+  return Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encodeFirestoreValue(value)]));
+}
+
+async function firestoreRequest(user, relativePath, options = {}) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 12000);
+  try {
+    const token = await withTimeout(user.getIdToken());
+    const response = await fetch(`${FIRESTORE_BASE_URL}/${relativePath}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(options.headers || {})
+      }
+    });
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!response.ok) {
+      const error = new Error(payload?.error?.message || `Firestore-Fehler ${response.status}`);
+      error.code = response.status === 403 ? 'permission-denied'
+        : response.status === 404 ? 'not-found'
+        : `firestore/http-${response.status}`;
+      throw error;
+    }
+    return payload;
+  } catch (error) {
+    if (error?.name === 'AbortError') throw { code: 'firestore/timeout' };
+    if (error?.code) throw error;
+    const networkError = new Error('Die Firestore-HTTPS-Verbindung konnte nicht hergestellt werden.');
+    networkError.code = 'firestore/network';
+    throw networkError;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function readFirestoreDocument(user, relativePath) {
+  try {
+    const documentData = await firestoreRequest(user, relativePath);
+    return decodeFirestoreFields(documentData.fields || {});
+  } catch (error) {
+    if (error.code === 'not-found') return null;
+    throw error;
+  }
+}
+
+async function writeFirestoreDocument(user, relativePath, data) {
+  await firestoreRequest(user, relativePath, {
+    method: 'PATCH',
+    body: JSON.stringify({ fields: encodeFirestoreFields(data) })
+  });
+  return data;
+}
+
+async function listFirestoreCollection(user, relativePath) {
+  const payload = await firestoreRequest(user, `${relativePath}?pageSize=1000`);
+  return (payload.documents || []).map(documentData => ({
+    ...decodeFirestoreFields(documentData.fields || {}),
+    id: documentData.name.split('/').pop()
+  }));
 }
 
 function documentLink(documentData) {
@@ -119,14 +209,14 @@ function render() {
   else { renderNav(); renderProcess(); }
 }
 
-async function loadAreaContent(area) {
-  const [processesSnapshot, documentsSnapshot] = await withTimeout(Promise.all([
-    getDocs(collection(db, 'areas', area, 'processes')),
-    getDocs(collection(db, 'areas', area, 'documents'))
-  ]));
+async function loadAreaContent(user, area) {
+  const [processes, documents] = await Promise.all([
+    listFirestoreCollection(user, `areas/${area}/processes`),
+    listFirestoreCollection(user, `areas/${area}/documents`)
+  ]);
   return {
-    processes: processesSnapshot.docs.map(snapshot => ({ ...snapshot.data(), id: snapshot.id, area })),
-    documents: documentsSnapshot.docs.map(snapshot => ({ ...snapshot.data(), id: snapshot.id, area }))
+    processes: processes.map(process => ({ ...process, area })),
+    documents: documents.map(documentData => ({ ...documentData, area }))
   };
 }
 
@@ -139,25 +229,28 @@ async function openIntranet(user) {
   }, PROFILE_WATCHDOG_MS);
 
   try {
-  const profileReference = doc(db, 'users', user.uid);
-  let profileSnapshot = await withTimeout(getDoc(profileReference));
-  if (!profileSnapshot.exists()) {
-    await withTimeout(setDoc(profileReference, {
+  const profilePath = `users/${encodeURIComponent(user.uid)}`;
+  let profile = await readFirestoreDocument(user, profilePath);
+  if (!profile) {
+    profile = await writeFirestoreDocument(user, profilePath, {
       displayName: user.email,
       active: true,
       roles: user.uid === INITIAL_ADMIN_UID ? ['admin'] : ['reader'],
       areas: ['all']
-    }));
-    profileSnapshot = await withTimeout(getDoc(profileReference));
-  } else if (user.uid === INITIAL_ADMIN_UID && !(profileSnapshot.data().roles || []).includes('admin')) {
-    await withTimeout(setDoc(profileReference, { roles: ['admin'], areas: ['all'], active: true }, { merge: true }));
-    profileSnapshot = await withTimeout(getDoc(profileReference));
+    });
+  } else if (user.uid === INITIAL_ADMIN_UID && !(profile.roles || []).includes('admin')) {
+    profile = await writeFirestoreDocument(user, profilePath, {
+      ...profile,
+      displayName: profile.displayName || user.email,
+      roles: ['admin'],
+      areas: ['all'],
+      active: true
+    });
   }
-  if (profileSnapshot.data().active !== true) {
+  if (profile.active !== true) {
     await signOut(auth);
     throw new Error('Dieses Benutzerkonto ist für das QM-Intranet nicht aktiv.');
   }
-  const profile = profileSnapshot.data();
   const roles = Array.isArray(profile.roles) ? profile.roles : [];
   const grantedAreas = Array.isArray(profile.areas) ? profile.areas : [];
   state.areas = roles.includes('admin') || grantedAreas.includes('all')
@@ -168,7 +261,7 @@ async function openIntranet(user) {
   state.query = '';
   document.getElementById('account-name').textContent = roles.includes('admin') ? `${profile.displayName || user.email} · Administration` : (profile.displayName || user.email);
   showMessage('Daten werden geladen …');
-  const content = await Promise.all(state.areas.map(loadAreaContent));
+  const content = await Promise.all(state.areas.map(area => loadAreaContent(user, area)));
   state.processes = content.flatMap(item => item.processes).sort((a, b) => a.id.localeCompare(b.id, 'de'));
   state.documents = content.flatMap(item => item.documents).sort((a, b) => a.id.localeCompare(b.id, 'de'));
   loginView.hidden = true;
@@ -187,7 +280,8 @@ function errorMessage(error) {
     'auth/network-request-failed': 'Die Verbindung zu Firebase konnte nicht hergestellt werden.',
     'auth/too-many-requests': 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.',
     'permission-denied': 'Der Zugriff wurde durch die Berechtigungsregeln abgelehnt.',
-    'firestore/timeout': 'Firestore antwortet nicht. Bitte prüfen, ob die Firestore-Regeln veröffentlicht wurden und die Datenbank erreichbar ist.'
+    'firestore/timeout': 'Firestore antwortet nicht. Bitte prüfen, ob die Firestore-Regeln veröffentlicht wurden und die Datenbank erreichbar ist.',
+    'firestore/network': 'Die Firestore-HTTPS-Verbindung konnte nicht hergestellt werden.'
   };
   return messages[error.code] || error.message || 'Anmeldung nicht möglich.';
 }
