@@ -1,13 +1,13 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js';
-import { getFirestore, collection, doc, getDoc, getDocs, setDoc } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
+import { initializeFirestore, collection, doc, getDoc, getDocs, setDoc } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
 
 window.qmIntranetReady = true;
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+const db = initializeFirestore(app, { experimentalForceLongPolling: true });
 const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Security', k9: 'K9' };
 const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
 const PROFILE_WATCHDOG_MS = 10000;
