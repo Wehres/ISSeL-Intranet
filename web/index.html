@@ -20,6 +20,18 @@
       <p id="login-status" class="muted" role="status">Anmeldung wird vorbereitet …</p>
       <button type="submit">Anmelden</button>
     </form>
+    <script>
+      window.qmIntranetReady = false;
+      document.getElementById('login-form').addEventListener('submit', event => {
+        if (window.qmIntranetReady) return;
+        event.preventDefault();
+        const error = document.getElementById('login-error');
+        const status = document.getElementById('login-status');
+        error.textContent = 'Die Anmeldeanwendung wurde nicht geladen. Bitte Seite neu laden und erneut versuchen.';
+        error.hidden = false;
+        status.textContent = 'Anmeldung nicht möglich. Bitte Meldung oben beachten.';
+      });
+    </script>
   </section>
 
   <div id="app" class="app" hidden>
