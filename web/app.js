@@ -46,6 +46,14 @@ function setLoginStatus(message, busy = false) {
   loginButton.textContent = busy ? 'Anmeldung läuft …' : 'Anmelden';
 }
 
+function withTimeout(promise, milliseconds = 12000) {
+  let timeout;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = window.setTimeout(() => reject({ code: 'firestore/timeout' }), milliseconds);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => window.clearTimeout(timeout));
+}
+
 function documentLink(documentData) {
   const url = safeUrl(documentData.href);
   const title = escapeHtml(documentData.title);
@@ -111,10 +119,10 @@ function render() {
 }
 
 async function loadAreaContent(area) {
-  const [processesSnapshot, documentsSnapshot] = await Promise.all([
+  const [processesSnapshot, documentsSnapshot] = await withTimeout(Promise.all([
     getDocs(collection(db, 'areas', area, 'processes')),
     getDocs(collection(db, 'areas', area, 'documents'))
-  ]);
+  ]));
   return {
     processes: processesSnapshot.docs.map(snapshot => ({ ...snapshot.data(), id: snapshot.id, area })),
     documents: documentsSnapshot.docs.map(snapshot => ({ ...snapshot.data(), id: snapshot.id, area }))
@@ -123,18 +131,18 @@ async function loadAreaContent(area) {
 
 async function openIntranet(user) {
   const profileReference = doc(db, 'users', user.uid);
-  let profileSnapshot = await getDoc(profileReference);
+  let profileSnapshot = await withTimeout(getDoc(profileReference));
   if (!profileSnapshot.exists()) {
-    await setDoc(profileReference, {
+    await withTimeout(setDoc(profileReference, {
       displayName: user.email,
       active: true,
       roles: user.uid === INITIAL_ADMIN_UID ? ['admin'] : ['reader'],
       areas: ['all']
-    });
-    profileSnapshot = await getDoc(profileReference);
+    }));
+    profileSnapshot = await withTimeout(getDoc(profileReference));
   } else if (user.uid === INITIAL_ADMIN_UID && !(profileSnapshot.data().roles || []).includes('admin')) {
-    await setDoc(profileReference, { roles: ['admin'], areas: ['all'], active: true }, { merge: true });
-    profileSnapshot = await getDoc(profileReference);
+    await withTimeout(setDoc(profileReference, { roles: ['admin'], areas: ['all'], active: true }, { merge: true }));
+    profileSnapshot = await withTimeout(getDoc(profileReference));
   }
   if (profileSnapshot.data().active !== true) {
     await signOut(auth);
@@ -166,7 +174,8 @@ function errorMessage(error) {
     'auth/unauthorized-domain': 'Diese Internetadresse ist in Firebase noch nicht für die Anmeldung freigegeben.',
     'auth/network-request-failed': 'Die Verbindung zu Firebase konnte nicht hergestellt werden.',
     'auth/too-many-requests': 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.',
-    'permission-denied': 'Der Zugriff wurde durch die Berechtigungsregeln abgelehnt.'
+    'permission-denied': 'Der Zugriff wurde durch die Berechtigungsregeln abgelehnt.',
+    'firestore/timeout': 'Firestore antwortet nicht. Bitte prüfen, ob die Firestore-Regeln veröffentlicht wurden und die Datenbank erreichbar ist.'
   };
   return messages[error.code] || error.message || 'Anmeldung nicht möglich.';
 }
