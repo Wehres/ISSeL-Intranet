@@ -23,8 +23,8 @@ const db = getFirestore(app);
 const credential = await signInWithEmailAndPassword(auth, email, password);
 const profile = await getDoc(doc(db, 'users', credential.user.uid));
 
-if (!profile.exists() || profile.data().active !== true || !(profile.data().roles || []).includes('qmb')) {
-  throw new Error('Das verwendete Konto ist nicht als aktiver QMB in users/{UID} freigegeben.');
+if (!profile.exists() || profile.data().active !== true || !(profile.data().roles || []).includes('admin')) {
+  throw new Error('Das verwendete Konto ist nicht als aktiver Administrator in users/{UID} freigegeben.');
 }
 
 const writes = [];

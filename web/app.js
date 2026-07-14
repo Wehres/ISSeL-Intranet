@@ -1,12 +1,13 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js';
-import { getFirestore, collection, doc, getDoc, getDocs } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js';
 import { firebaseConfig } from './firebase-config.js';
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Security', k9: 'K9' };
+const INITIAL_ADMIN_UID = 'EvZ08EH3fDaNYtxQ0VpegPcejmW2';
 const state = { scope: 'all', selected: null, query: '', view: 'processes', processes: [], documents: [], areas: ['shared'] };
 
 const loginView = document.getElementById('login-view');
@@ -111,19 +112,34 @@ async function loadAreaContent(area) {
 }
 
 async function openIntranet(user) {
-  const profileSnapshot = await getDoc(doc(db, 'users', user.uid));
-  if (!profileSnapshot.exists() || profileSnapshot.data().active !== true) {
+  const profileReference = doc(db, 'users', user.uid);
+  let profileSnapshot = await getDoc(profileReference);
+  if (!profileSnapshot.exists()) {
+    await setDoc(profileReference, {
+      displayName: user.email,
+      active: true,
+      roles: user.uid === INITIAL_ADMIN_UID ? ['admin'] : ['reader'],
+      areas: ['all']
+    });
+    profileSnapshot = await getDoc(profileReference);
+  } else if (user.uid === INITIAL_ADMIN_UID && !(profileSnapshot.data().roles || []).includes('admin')) {
+    await setDoc(profileReference, { roles: ['admin'], areas: ['all'], active: true }, { merge: true });
+    profileSnapshot = await getDoc(profileReference);
+  }
+  if (profileSnapshot.data().active !== true) {
     await signOut(auth);
-    throw new Error('Für dieses Benutzerkonto ist noch keine Freigabe im QM-Intranet hinterlegt.');
+    throw new Error('Dieses Benutzerkonto ist für das QM-Intranet nicht aktiv.');
   }
   const profile = profileSnapshot.data();
   const roles = Array.isArray(profile.roles) ? profile.roles : [];
   const grantedAreas = Array.isArray(profile.areas) ? profile.areas : [];
-  state.areas = roles.includes('qmb') ? ['shared', 'security', 'k9'] : ['shared', ...grantedAreas.filter(area => ['security', 'k9'].includes(area))];
+  state.areas = roles.includes('admin') || grantedAreas.includes('all')
+    ? ['shared', 'security', 'k9']
+    : ['shared', ...grantedAreas.filter(area => ['security', 'k9'].includes(area))];
   state.scope = 'all';
   state.selected = null;
   state.query = '';
-  document.getElementById('account-name').textContent = profile.displayName || user.email;
+  document.getElementById('account-name').textContent = roles.includes('admin') ? `${profile.displayName || user.email} · Administration` : (profile.displayName || user.email);
   showMessage('Daten werden geladen …');
   const content = await Promise.all(state.areas.map(loadAreaContent));
   state.processes = content.flatMap(item => item.processes).sort((a, b) => a.id.localeCompare(b.id, 'de'));

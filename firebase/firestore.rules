@@ -10,10 +10,21 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
-    function isQmb() {
+    function isAdmin() {
       return signedIn()
         && ownProfile().data.active == true
-        && ownProfile().data.roles.hasAny(['qmb']);
+        && ownProfile().data.roles.hasAny(['admin']);
+    }
+
+    function isBootstrapAdmin(userId) {
+      return signedIn()
+        && request.auth.uid == userId
+        && userId == 'EvZ08EH3fDaNYtxQ0VpegPcejmW2'
+        && request.resource.data.active == true
+        && request.resource.data.roles.size() == 1
+        && request.resource.data.roles[0] == 'admin'
+        && request.resource.data.areas.size() == 1
+        && request.resource.data.areas[0] == 'all';
     }
 
     function canReadArea(area) {
@@ -22,19 +33,27 @@ service cloud.firestore {
         && (
           area == 'shared'
           || ownProfile().data.areas.hasAny([area, 'all'])
-          || isQmb()
+          || isAdmin()
         );
     }
 
     match /users/{userId} {
-      allow get: if signedIn() && (request.auth.uid == userId || isQmb());
-      allow list: if isQmb();
-      allow create, update, delete: if isQmb();
+      allow get: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isBootstrapAdmin(userId) || (signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.active == true
+        && request.resource.data.roles.size() == 1
+        && request.resource.data.roles[0] == 'reader'
+        && request.resource.data.areas.size() == 1
+        && request.resource.data.areas[0] == 'all');
+      allow update: if isAdmin() || isBootstrapAdmin(userId);
+      allow delete: if isAdmin();
     }
 
     match /areas/{area}/{collection}/{record} {
       allow read: if canReadArea(area);
-      allow create, update, delete: if isQmb();
+      allow create, update, delete: if isAdmin();
     }
   }
 }
