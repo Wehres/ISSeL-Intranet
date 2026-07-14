@@ -10,6 +10,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Security', k9: 'K9' };
 const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
+const PROFILE_WATCHDOG_MS = 10000;
 const state = { scope: 'all', selected: null, query: '', view: 'processes', processes: [], documents: [], areas: ['shared'] };
 
 const loginView = document.getElementById('login-view');
@@ -130,6 +131,14 @@ async function loadAreaContent(area) {
 }
 
 async function openIntranet(user) {
+  setLoginStatus('Firebase-Anmeldung erfolgreich. Firestore-Profil wird geladen …', true);
+  const profileWatchdog = window.setTimeout(() => {
+    loginError.textContent = 'Das Benutzerprofil kann nicht aus Firestore geladen werden. Bitte Firestore-Datenbank und Regeln prüfen.';
+    loginError.hidden = false;
+    setLoginStatus('Firestore antwortet nicht. Anmeldung wurde angehalten.');
+  }, PROFILE_WATCHDOG_MS);
+
+  try {
   const profileReference = doc(db, 'users', user.uid);
   let profileSnapshot = await withTimeout(getDoc(profileReference));
   if (!profileSnapshot.exists()) {
@@ -166,6 +175,9 @@ async function openIntranet(user) {
   appView.hidden = false;
   showMessage(state.processes.length ? '' : 'Es sind noch keine QM-Prozesse im Datenbestand hinterlegt.');
   render();
+  } finally {
+    window.clearTimeout(profileWatchdog);
+  }
 }
 
 function errorMessage(error) {
