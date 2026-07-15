@@ -88,9 +88,19 @@ function xhrJson(url, options = {}, timeoutMs = 12000) {
   });
 }
 
+async function xhrJsonWithRetry(url, options = {}, timeoutMs = 12000) {
+  try {
+    return await xhrJson(url, options, timeoutMs);
+  } catch (error) {
+    // Firmen-Proxys und Virenscanner lassen häufig nur den ersten Aufruf hängen; ein zweiter Versuch gelingt dann.
+    if (error?.code !== 'xhr/timeout' && error?.code !== 'xhr/network') throw error;
+    return xhrJson(url, options, timeoutMs);
+  }
+}
+
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
   try {
-    const response = await xhrJson(url, options, timeoutMs);
+    const response = await xhrJsonWithRetry(url, options, timeoutMs);
     if (!response.ok) {
       const error = new Error(response.payload?.error?.message || `HTTP-Fehler ${response.status}`);
       error.code = normalizeAuthError(response.payload?.error?.message || `HTTP_${response.status}`);
@@ -207,7 +217,7 @@ function encodeFirestoreFields(data) {
 async function firestoreRequest(user, relativePath, options = {}) {
   try {
     const token = await getValidIdToken(user);
-    const response = await xhrJson(`${FIRESTORE_BASE_URL}/${relativePath}`, {
+    const response = await xhrJsonWithRetry(`${FIRESTORE_BASE_URL}/${relativePath}`, {
       ...options,
       headers: {
         Authorization: `Bearer ${token}`,
@@ -419,11 +429,11 @@ function errorMessage(error) {
   const messages = {
     'auth/invalid-credential': 'E-Mail-Adresse oder Passwort sind nicht korrekt.',
     'auth/unauthorized-domain': 'Diese Internetadresse ist in Firebase noch nicht für die Anmeldung freigegeben.',
-    'auth/network-request-failed': 'Die Verbindung zu Firebase konnte nicht hergestellt werden.',
+    'auth/network-request-failed': 'Die Verbindung zu Firebase konnte nicht hergestellt werden. Bitte den Verbindungstest unter dem Anmeldebutton öffnen.',
     'auth/too-many-requests': 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.',
     'auth/user-disabled': 'Dieses Benutzerkonto wurde in Firebase deaktiviert.',
     'auth/session-expired': 'Die Sitzung ist abgelaufen. Bitte erneut anmelden.',
-    'permission-denied': 'Der Zugriff wurde durch die Berechtigungsregeln abgelehnt.',
+    'permission-denied': 'Der Zugriff wurde durch die Berechtigungsregeln abgelehnt. Bitte prüfen, ob die aktuellen Firestore-Regeln veröffentlicht sind und das Konto für das QM-Intranet freigegeben ist.',
     'firestore/timeout': 'Firestore antwortet nicht. Bitte prüfen, ob die Firestore-Regeln veröffentlicht wurden und die Datenbank erreichbar ist.',
     'firestore/network': 'Die Firestore-HTTPS-Verbindung konnte nicht hergestellt werden.'
   };

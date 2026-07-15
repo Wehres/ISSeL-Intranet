@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>I.S.Se.L. QM-Intranet · Verbindungstest</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .diag-wrap { min-height:100vh; display:grid; place-items:center; padding:24px; }
+    .diag-card { width:min(640px, 100%); background:#fff; border:1px solid var(--line); border-radius:10px; padding:30px; }
+    .diag-card h1 { font-size:26px; margin:0 0 6px; }
+    table.diag { width:100%; border-collapse:collapse; margin:18px 0; font-size:15px; }
+    table.diag th, table.diag td { text-align:left; padding:9px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+    table.diag th { font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+    .diag-ok { color:#1c7c3c; font-weight:700; }
+    .diag-fail { color:#a51c30; font-weight:700; }
+    .diag-pending { color:var(--muted); }
+    .diag-actions { display:flex; gap:10px; flex-wrap:wrap; }
+    .diag-actions button, .diag-actions a { border:0; border-radius:7px; padding:11px 14px; background:var(--blue); color:#fff; font-weight:700; text-decoration:none; }
+    .diag-actions .secondary { background:#fff; color:var(--blue); border:1px solid var(--blue); }
+    #diag-summary { margin:0 0 18px; padding:12px; border-left:4px solid var(--blue); background:var(--blue-soft); }
+  </style>
+</head>
+<body>
+  <div class="diag-wrap">
+    <div class="diag-card">
+      <p class="eyebrow">I.S.Se.L.</p>
+      <h1>QM-Intranet · Verbindungstest</h1>
+      <p class="muted">Diese Seite prüft ohne Anmeldedaten, ob Ihr Browser die für das QM-Intranet nötigen Firebase-Dienste erreicht. Kein Test überträgt Passwörter oder QM-Daten.</p>
+      <p id="diag-summary">Die Prüfung läuft …</p>
+      <table class="diag" aria-live="polite">
+        <thead><tr><th>Prüfung</th><th>Ergebnis</th><th>Dauer</th></tr></thead>
+        <tbody id="diag-rows"></tbody>
+      </table>
+      <div class="diag-actions">
+        <button type="button" id="diag-copy">Ergebnis kopieren</button>
+        <button type="button" id="diag-again" class="secondary">Erneut prüfen</button>
+        <a href="./index.html" class="secondary">Zur Anmeldung</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var API_KEY = 'AIzaSyC9XTqGk3UV1Ma2hfvrtOULaf_b1mULsVs';
+      var PROJECT = 'issel-qm-intranet';
+      var TIMEOUT_MS = 15000;
+      var rows = document.getElementById('diag-rows');
+      var summary = document.getElementById('diag-summary');
+      var results = [];
+
+      // Erwartet wird jeweils eine schnelle, definierte Ablehnung ohne gültige Zugangsdaten.
+      var tests = [
+        {
+          name: 'Intranet-Seite (GitHub Pages)',
+          method: 'GET',
+          url: './index.html?diagnose=' + Date.now(),
+          expected: function (status) { return status === 200; }
+        },
+        {
+          name: 'Firebase-Anmeldedienst (identitytoolkit.googleapis.com)',
+          method: 'POST',
+          url: 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=' + API_KEY,
+          body: JSON.stringify({ email: 'verbindungstest@example.com', password: 'verbindungstest', returnSecureToken: true }),
+          expected: function (status) { return status === 400; }
+        },
+        {
+          name: 'Firebase-Sitzungsdienst (securetoken.googleapis.com)',
+          method: 'POST',
+          url: 'https://securetoken.googleapis.com/v1/token?key=' + API_KEY,
+          form: 'grant_type=refresh_token&refresh_token=verbindungstest',
+          expected: function (status) { return status === 400; }
+        },
+        {
+          name: 'Firestore-Datenbank (firestore.googleapis.com)',
+          method: 'GET',
+          url: 'https://firestore.googleapis.com/v1/projects/' + PROJECT + '/databases/(default)/documents/users/verbindungstest',
+          expected: function (status) { return status === 403; }
+        }
+      ];
+
+      function runTest(test, done) {
+        var startedAt = Date.now();
+        var request = new XMLHttpRequest();
+        var finished = false;
+        function finish(ok, detail) {
+          if (finished) return;
+          finished = true;
+          done({ name: test.name, ok: ok, detail: detail, ms: Date.now() - startedAt });
+        }
+        try {
+          request.open(test.method, test.url, true);
+          request.timeout = TIMEOUT_MS;
+          if (test.body) request.setRequestHeader('Content-Type', 'application/json');
+          if (test.form) request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+          request.onload = function () {
+            if (request.status === 0) return finish(false, 'Keine Antwort (Verbindung blockiert)');
+            if (test.expected(request.status)) return finish(true, 'Erreichbar (HTTP ' + request.status + ' wie erwartet)');
+            finish(false, 'Unerwartete Antwort HTTP ' + request.status);
+          };
+          request.onerror = function () { finish(false, 'Netzwerkfehler (Verbindung blockiert oder unterbrochen)'); };
+          request.ontimeout = function () { finish(false, 'Keine Antwort innerhalb von ' + (TIMEOUT_MS / 1000) + ' Sekunden'); };
+          request.send(test.body || test.form || null);
+        } catch (error) {
+          finish(false, 'Technischer Fehler: ' + error.message);
+        }
+      }
+
+      function renderRow(result) {
+        var row = document.createElement('tr');
+        var okCell = result.ok ? '<span class="diag-ok">OK</span>' : '<span class="diag-fail">Fehler</span>';
+        row.innerHTML = '<td>' + result.name + '<div class="muted" style="font-size:13px">' + result.detail + '</div></td>' +
+          '<td>' + okCell + '</td><td>' + result.ms + ' ms</td>';
+        rows.appendChild(row);
+      }
+
+      function renderSummary() {
+        var failed = results.filter(function (result) { return !result.ok; });
+        if (!failed.length) {
+          summary.textContent = 'Alle Verbindungen funktionieren. Wenn die Anmeldung trotzdem scheitert, bitte das Ergebnis kopieren und weitergeben.';
+        } else {
+          summary.innerHTML = '<span class="diag-fail">' + failed.length + ' von ' + results.length + ' Prüfungen fehlgeschlagen.</span> ' +
+            'Die markierten Dienste werden in diesem Browser oder Netzwerk blockiert (häufige Ursachen: Firmen-Proxy, Virenscanner, Firewall). Bitte Ergebnis kopieren und an die IT bzw. den QM-Verantwortlichen weitergeben.';
+        }
+      }
+
+      function reportText() {
+        var lines = [
+          'QM-Intranet Verbindungstest',
+          'Zeitpunkt: ' + new Date().toISOString(),
+          'Adresse: ' + window.location.href,
+          'Browser: ' + navigator.userAgent,
+          ''
+        ];
+        results.forEach(function (result) {
+          lines.push((result.ok ? '[OK]    ' : '[FEHLER] ') + result.name + ' – ' + result.detail + ' (' + result.ms + ' ms)');
+        });
+        return lines.join('\n');
+      }
+
+      function runAll() {
+        rows.innerHTML = '';
+        results = [];
+        summary.textContent = 'Die Prüfung läuft …';
+        var index = 0;
+        (function next() {
+          if (index >= tests.length) return renderSummary();
+          runTest(tests[index], function (result) {
+            results.push(result);
+            renderRow(result);
+            index += 1;
+            next();
+          });
+        })();
+      }
+
+      document.getElementById('diag-copy').addEventListener('click', function () {
+        var text = reportText();
+        function fallbackCopy() {
+          window.prompt('Bitte Text manuell kopieren:', text);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(function () {
+            summary.textContent = 'Das Ergebnis wurde in die Zwischenablage kopiert.';
+          }, fallbackCopy);
+        } else {
+          fallbackCopy();
+        }
+      });
+      document.getElementById('diag-again').addEventListener('click', runAll);
+
+      if (window.location.protocol === 'file:') {
+        summary.innerHTML = '<span class="diag-fail">Lokale Datei erkannt.</span> Bitte den Verbindungstest ausschließlich über https://wehres.github.io/ISSeL-Intranet/diagnose.html öffnen.';
+      } else {
+        runAll();
+      }
+    })();
+  </script>
+</body>
+</html>
