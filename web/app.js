@@ -11,6 +11,7 @@ const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Sec
 const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
 const PROFILE_WATCHDOG_MS = 10000;
 const state = { scope: 'all', selected: null, query: '', view: 'processes', processes: [], documents: [], areas: ['shared'] };
+const isLocalPreview = window.location.protocol === 'file:';
 
 const loginView = document.getElementById('login-view');
 const appView = document.getElementById('app');
@@ -88,7 +89,8 @@ async function firestoreRequest(user, relativePath, options = {}) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12000);
   try {
-    const token = await withTimeout(user.getIdToken());
+    const cachedToken = user.accessToken || user.stsTokenManager?.accessToken;
+    const token = cachedToken || await withTimeout(user.getIdToken(), 5000);
     const response = await fetch(`${FIRESTORE_BASE_URL}/${relativePath}`, {
       ...options,
       signal: controller.signal,
@@ -220,12 +222,27 @@ async function loadAreaContent(user, area) {
   };
 }
 
+function showAuthenticatedShell(user) {
+  state.areas = ['shared', 'security', 'k9'];
+  state.scope = 'all';
+  state.selected = null;
+  state.query = '';
+  state.processes = [];
+  state.documents = [];
+  document.getElementById('account-name').textContent = user.uid === INITIAL_ADMIN_UID
+    ? `${user.email} · Administration`
+    : user.email;
+  loginError.hidden = true;
+  loginView.hidden = true;
+  appView.hidden = false;
+  showMessage('Anmeldung erfolgreich. QM-Daten werden aus Firestore geladen …');
+  render();
+}
+
 async function openIntranet(user) {
-  setLoginStatus('Firebase-Anmeldung erfolgreich. Firestore-Profil wird geladen …', true);
+  showMessage('Benutzerprofil wird aus Firestore geladen …');
   const profileWatchdog = window.setTimeout(() => {
-    loginError.textContent = 'Das Benutzerprofil kann nicht aus Firestore geladen werden. Bitte Firestore-Datenbank und Regeln prüfen.';
-    loginError.hidden = false;
-    setLoginStatus('Firestore antwortet nicht. Anmeldung wurde angehalten.');
+    showMessage('Anmeldung erfolgreich, aber Firestore antwortet nicht. Bitte Datenbank und Regeln prüfen.');
   }, PROFILE_WATCHDOG_MS);
 
   try {
@@ -318,20 +335,27 @@ document.getElementById('search').addEventListener('input', event => {
 });
 
 onAuthStateChanged(auth, async user => {
+  if (isLocalPreview) {
+    appView.hidden = true;
+    loginView.hidden = false;
+    loginError.textContent = 'Lokale Datei erkannt. Bitte ausschließlich die veröffentlichte GitHub-Seite verwenden.';
+    loginError.hidden = false;
+    setLoginStatus('Anmeldung in der lokalen Vorschau deaktiviert.');
+    return;
+  }
   if (!user) {
     appView.hidden = true;
     loginView.hidden = false;
     setLoginStatus('Anmeldung bereit.');
     return;
   }
+  showAuthenticatedShell(user);
   try {
     await openIntranet(user);
   } catch (error) {
-    appView.hidden = true;
-    loginView.hidden = false;
-    loginError.textContent = errorMessage(error);
-    loginError.hidden = false;
-    setLoginStatus('Anmeldung nicht möglich. Bitte Meldung oben beachten.');
+    loginView.hidden = true;
+    appView.hidden = false;
+    showMessage(`Anmeldung erfolgreich, aber QM-Daten konnten nicht geladen werden: ${errorMessage(error)}`);
   }
 });
 
