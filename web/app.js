@@ -165,6 +165,7 @@ function signOutCurrentUser() {
   loginForm.reset();
   loginError.hidden = true;
   resetLoginLog();
+  document.getElementById('import-link').hidden = true;
   setLoginStatus('Anmeldung bereit.');
 }
 
@@ -383,6 +384,7 @@ async function openIntranet(user) {
   state.selected = null;
   state.query = '';
   document.getElementById('account-name').textContent = roles.includes('admin') ? `${profile.displayName || user.email} · Administration` : (profile.displayName || user.email);
+  document.getElementById('import-link').hidden = !roles.includes('admin');
   showMessage('Daten werden geladen …');
   const content = await Promise.all(state.areas.map(area => loadAreaContent(user, area)));
   state.processes = content.flatMap(item => item.processes).sort((a, b) => a.id.localeCompare(b.id, 'de'));

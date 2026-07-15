@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>I.S.Se.L. QM-Intranet · Datenimport</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .imp-wrap { min-height:100vh; display:grid; place-items:center; padding:24px; }
+    .imp-card { width:min(640px, 100%); background:#fff; border:1px solid var(--line); border-radius:10px; padding:30px; }
+    .imp-card h1 { font-size:26px; margin:0 0 6px; }
+    .imp-status { margin:14px 0; padding:12px; border-left:4px solid var(--blue); background:var(--blue-soft); }
+    .imp-status.error { border-left-color:#a51c30; background:#faeef0; color:#a51c30; }
+    .imp-log { border-left:3px solid var(--line); padding:4px 0 4px 10px; color:var(--muted); font-size:13px; display:grid; gap:2px; max-height:260px; overflow-y:auto; margin:14px 0; }
+    .imp-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+    .imp-actions button, .imp-actions a { border:0; border-radius:7px; padding:11px 14px; background:var(--blue); color:#fff; font-weight:700; text-decoration:none; }
+    .imp-actions button:disabled { opacity:.5; cursor:default; }
+    .imp-actions .secondary { background:#fff; color:var(--blue); border:1px solid var(--blue); }
+    input[type=file] { padding:10px; border:1px dashed var(--line); border-radius:7px; width:100%; }
+  </style>
+</head>
+<body>
+  <div class="imp-wrap">
+    <div class="imp-card">
+      <p class="eyebrow">I.S.Se.L.</p>
+      <h1>QM-Intranet · Datenimport</h1>
+      <p class="muted">Liest die lokale Datei <code>data.js</code> aus dem QM-Intranet-Ordner ein und überträgt alle Prozesse und Dokumentinformationen nach Firestore. Nur für das Administrationskonto. Bereits hinterlegte Dokumentlinks (<code>href</code>) bleiben erhalten.</p>
+      <p id="imp-status" class="imp-status">Anmeldung wird geprüft …</p>
+      <input id="imp-file" type="file" accept=".js,.json" hidden>
+      <div id="imp-log" class="imp-log" hidden></div>
+      <div class="imp-actions">
+        <button type="button" id="imp-start" hidden disabled>Import starten</button>
+        <a href="./index.html" class="secondary">Zurück zum Intranet</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var API_KEY = 'AIzaSyC9XTqGk3UV1Ma2hfvrtOULaf_b1mULsVs';
+      var PROJECT = 'issel-qm-intranet';
+      var BASE = 'https://firestore.googleapis.com/v1/projects/' + PROJECT + '/databases/(default)/documents';
+      var SESSION_KEY = 'issel-qm-session';
+      var AREAS = ['shared', 'security', 'k9'];
+
+      var statusBox = document.getElementById('imp-status');
+      var fileInput = document.getElementById('imp-file');
+      var logBox = document.getElementById('imp-log');
+      var startButton = document.getElementById('imp-start');
+      var session = null;
+      var seed = null;
+
+      function setStatus(text, isError) {
+        statusBox.textContent = text;
+        statusBox.className = 'imp-status' + (isError ? ' error' : '');
+      }
+
+      function log(text) {
+        var line = document.createElement('div');
+        line.textContent = text;
+        logBox.appendChild(line);
+        logBox.hidden = false;
+        logBox.scrollTop = logBox.scrollHeight;
+      }
+
+      function request(method, path, body, done) {
+        var xhr = new XMLHttpRequest();
+        xhr.open(method, path.indexOf('https://') === 0 ? path : BASE + path, true);
+        xhr.timeout = 20000;
+        if (session) xhr.setRequestHeader('Authorization', 'Bearer ' + session.idToken);
+        if (body) xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.onload = function () {
+          var payload = {};
+          try { payload = JSON.parse(xhr.responseText || '{}'); } catch (ignored) {}
+          done(xhr.status, payload);
+        };
+        xhr.onerror = function () { done(0, {}); };
+        xhr.ontimeout = function () { done(-1, {}); };
+        xhr.send(body ? JSON.stringify(body) : null);
+      }
+
+      function stringValue(value) { return { stringValue: String(value == null ? '' : value) }; }
+      function arrayOfStrings(values) {
+        return { arrayValue: { values: (values || []).map(stringValue) } };
+      }
+
+      // Baut die PATCH-Adresse mit updateMask, damit vorhandene href-Links nicht überschrieben werden.
+      function patchUrl(path, fieldNames) {
+        return BASE + path + '?' + fieldNames.map(function (name) { return 'updateMask.fieldPaths=' + name; }).join('&');
+      }
+
+      function initialize() {
+        try { session = JSON.parse(window.sessionStorage.getItem(SESSION_KEY) || 'null'); } catch (ignored) {}
+        if (!session || !session.idToken) {
+          setStatus('Keine aktive Anmeldung gefunden. Bitte zuerst im Intranet anmelden und diese Seite über den Verwaltungslink öffnen.', true);
+          return;
+        }
+        request('GET', '/users/' + encodeURIComponent(session.uid), null, function (status, payload) {
+          var roles = ((payload.fields || {}).roles || { arrayValue: {} }).arrayValue.values || [];
+          var isAdmin = roles.some(function (entry) { return entry.stringValue === 'admin'; });
+          if (status !== 200 || !isAdmin) {
+            setStatus('Dieses Konto ist kein Administrationskonto. Der Import ist nur mit dem Administrationskonto möglich.', true);
+            return;
+          }
+          setStatus('Administrationskonto bestätigt. Bitte die Datei data.js aus dem QM-Intranet-Ordner auswählen.');
+          fileInput.hidden = false;
+        });
+      }
+
+      fileInput.addEventListener('change', function () {
+        var file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          var sandbox = {};
+          try {
+            new Function('window', String(reader.result))(sandbox);
+          } catch (error) {
+            setStatus('Die Datei konnte nicht gelesen werden: ' + error.message, true);
+            return;
+          }
+          var data = sandbox.QM_DATA;
+          if (!data || !Array.isArray(data.documents) || !Array.isArray(data.processes)) {
+            setStatus('Die Datei enthält keine QM_DATA-Struktur mit documents und processes. Bitte die richtige data.js auswählen.', true);
+            return;
+          }
+          seed = data;
+          var counts = AREAS.map(function (area) {
+            var docs = data.documents.filter(function (entry) { return entry.area === area; }).length;
+            var procs = data.processes.filter(function (entry) { return entry.area === area; }).length;
+            return area + ': ' + procs + ' Prozesse, ' + docs + ' Dokumente';
+          }).join(' · ');
+          setStatus('Datei gelesen: ' + data.processes.length + ' Prozesse und ' + data.documents.length + ' Dokumente (' + counts + '). Jetzt „Import starten“ klicken.');
+          startButton.hidden = false;
+          startButton.disabled = false;
+        };
+        reader.readAsText(file);
+      });
+
+      startButton.addEventListener('click', function () {
+        if (!seed) return;
+        startButton.disabled = true;
+        fileInput.disabled = true;
+        var writes = [];
+        seed.documents.forEach(function (entry) {
+          if (AREAS.indexOf(entry.area) < 0 || !entry.id) return;
+          writes.push({
+            url: patchUrl('/areas/' + entry.area + '/documents/' + encodeURIComponent(entry.id), ['title', 'type', 'sourceFile']),
+            fields: { title: stringValue(entry.title), type: stringValue(entry.type), sourceFile: stringValue(entry.file || '') },
+            label: entry.id
+          });
+        });
+        seed.processes.forEach(function (entry) {
+          if (AREAS.indexOf(entry.area) < 0 || !entry.id) return;
+          writes.push({
+            url: patchUrl('/areas/' + entry.area + '/processes/' + encodeURIComponent(entry.id), ['title', 'group', 'description', 'flow', 'documentIds']),
+            fields: {
+              title: stringValue(entry.title),
+              group: stringValue(entry.group),
+              description: stringValue(entry.description),
+              flow: arrayOfStrings(entry.flow),
+              documentIds: arrayOfStrings((entry.documents || []).map(function (docEntry) { return docEntry.id; }))
+            },
+            label: entry.id
+          });
+        });
+        var index = 0;
+        var failures = 0;
+        setStatus('Import läuft … bitte das Fenster geöffnet lassen.');
+        (function next() {
+          if (index >= writes.length) {
+            if (failures === 0) {
+              setStatus('Import abgeschlossen: ' + writes.length + ' Datensätze übertragen. Das Intranet ist jetzt gefüllt.');
+              log('Fertig. Zurück zum Intranet wechseln und die Seite neu laden.');
+            } else {
+              setStatus('Import beendet, aber ' + failures + ' von ' + writes.length + ' Datensätzen sind fehlgeschlagen. Bitte Protokoll prüfen und erneut starten.', true);
+            }
+            startButton.disabled = failures === 0;
+            fileInput.disabled = false;
+            return;
+          }
+          var write = writes[index];
+          request('PATCH', write.url, { fields: write.fields }, function (status) {
+            if (status !== 200) {
+              failures += 1;
+              log('Fehler bei ' + write.label + ' (HTTP ' + status + ')');
+            } else if ((index + 1) % 25 === 0 || index + 1 === writes.length) {
+              log((index + 1) + ' von ' + writes.length + ' Datensätzen übertragen …');
+            }
+            index += 1;
+            next();
+          });
+        })();
+      });
+
+      if (window.location.protocol === 'file:') {
+        setStatus('Lokale Datei erkannt. Bitte den Import über https://wehres.github.io/ISSeL-Intranet/import.html öffnen.', true);
+      } else {
+        initialize();
+      }
+    })();
+  </script>
+</body>
+</html>

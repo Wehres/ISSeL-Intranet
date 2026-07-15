@@ -28,6 +28,8 @@ aside { background:#132b45; color:#fff; padding:26px 18px; display:flex; flex-di
 .nav-process:hover, .nav-process.active { background:#244664; border-left-color:#8fc4f1; color:#fff; }
 .account { margin-top:auto; border-top:1px solid #426382; padding-top:16px; display:grid; gap:10px; font-size:13px; }
 .account button { border:1px solid #426382; color:#fff; background:transparent; border-radius:6px; padding:7px; text-align:left; }
+.import-link { color:#8fc4f1; text-decoration:none; }
+.import-link:hover { text-decoration:underline; }
 main { padding:30px; max-width:1450px; width:100%; margin:0 auto; }
 .topline, .library-head { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:20px; }
 h1 { font-size:28px; margin:0 0 4px; }
