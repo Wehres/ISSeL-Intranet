@@ -38,6 +38,17 @@
         <button type="button" id="diag-again" class="secondary">Erneut prüfen</button>
         <a href="./index.html" class="secondary">Zur Anmeldung</a>
       </div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:24px 0">
+      <h2 style="font-size:20px;margin:0 0 6px">Anmeldetest mit Protokoll</h2>
+      <p class="muted">Führt die echte Anmeldung Schritt für Schritt aus und protokolliert jeden Einzelschritt. Das Passwort wird ausschließlich an Firebase übertragen und nicht gespeichert.</p>
+      <div style="display:grid;gap:8px;margin:14px 0">
+        <input id="login-test-email" type="email" placeholder="E-Mail-Adresse" autocomplete="email">
+        <input id="login-test-password" type="password" placeholder="Passwort" autocomplete="current-password">
+        <button type="button" id="login-test-run" style="border:0;border-radius:7px;padding:11px 14px;background:var(--blue);color:#fff;font-weight:700">Anmeldetest starten</button>
+      </div>
+      <table class="diag" aria-live="polite">
+        <tbody id="login-test-rows"></tbody>
+      </table>
     </div>
   </div>
   <script>
@@ -168,6 +179,97 @@
         }
       });
       document.getElementById('diag-again').addEventListener('click', runAll);
+
+      var loginRows = document.getElementById('login-test-rows');
+      var loginResults = [];
+
+      function logStep(name, ok, detail, ms) {
+        var result = { name: name, ok: ok, detail: detail, ms: ms };
+        loginResults.push(result);
+        results.push(result);
+        var row = document.createElement('tr');
+        var okCell = ok ? '<span class="diag-ok">OK</span>' : '<span class="diag-fail">Fehler</span>';
+        row.innerHTML = '<td>' + name + '<div class="muted" style="font-size:13px">' + detail + '</div></td>' +
+          '<td>' + okCell + '</td><td>' + (ms == null ? '–' : ms + ' ms') + '</td>';
+        loginRows.appendChild(row);
+      }
+
+      // Führt einen XHR aus und liefert Status, Dauer und Antwortgröße – auch im Fehlerfall.
+      function timedRequest(method, url, headers, body, done) {
+        var startedAt = Date.now();
+        var request = new XMLHttpRequest();
+        var finished = false;
+        function finish(outcome, status, text) {
+          if (finished) return;
+          finished = true;
+          done({ outcome: outcome, status: status, text: text, ms: Date.now() - startedAt });
+        }
+        request.open(method, url, true);
+        request.timeout = TIMEOUT_MS;
+        Object.keys(headers || {}).forEach(function (name) { request.setRequestHeader(name, headers[name]); });
+        request.onload = function () {
+          if (request.status === 0) return finish('blocked', 0, 0);
+          finish('answered', request.status, request.responseText || '');
+        };
+        request.onerror = function () { finish('network-error', 0, ''); };
+        request.ontimeout = function () { finish('timeout', 0, ''); };
+        request.send(body || null);
+      }
+
+      function describeFailure(reply) {
+        if (reply.outcome === 'timeout') return 'Keine Antwort innerhalb von ' + (TIMEOUT_MS / 1000) + ' Sekunden – die Anfrage wurde gesendet, aber die Antwort kommt nicht an.';
+        if (reply.outcome === 'network-error' || reply.outcome === 'blocked') return 'Netzwerkfehler – die Verbindung wurde blockiert oder unterbrochen.';
+        return 'Unerwartete Antwort HTTP ' + reply.status + '.';
+      }
+
+      document.getElementById('login-test-run').addEventListener('click', function () {
+        var email = document.getElementById('login-test-email').value.trim();
+        var password = document.getElementById('login-test-password').value;
+        if (!email || !password) { window.alert('Bitte E-Mail-Adresse und Passwort eingeben.'); return; }
+        loginRows.innerHTML = '';
+        loginResults = [];
+        var button = document.getElementById('login-test-run');
+        button.disabled = true;
+
+        timedRequest('POST', 'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=' + API_KEY,
+          { 'Content-Type': 'application/json' },
+          JSON.stringify({ email: email, password: password, returnSecureToken: true }),
+          function (reply) {
+            if (reply.outcome !== 'answered') {
+              logStep('1. Anmeldeanfrage', false, describeFailure(reply) + ' Genau hier klemmt die Anmeldung.', reply.ms);
+              button.disabled = false;
+              return;
+            }
+            if (reply.status !== 200) {
+              logStep('1. Anmeldeanfrage', false, 'Firebase lehnt ab (HTTP ' + reply.status + '). Bei HTTP 400 sind meist E-Mail oder Passwort falsch oder das Konto gesperrt.', reply.ms);
+              button.disabled = false;
+              return;
+            }
+            var data = {};
+            try { data = JSON.parse(reply.text || '{}'); } catch (ignored) {}
+            if (!data.idToken) {
+              logStep('1. Anmeldeanfrage', false, 'HTTP 200 empfangen, aber die Antwort enthält keinen verwertbaren Sicherheitstoken (' + reply.text.length + ' Zeichen). Vermutlich verändert ein Sicherheitsprogramm die Antwort.', reply.ms);
+              button.disabled = false;
+              return;
+            }
+            logStep('1. Anmeldeanfrage', true, 'Antwort mit Sicherheitstoken empfangen (HTTP 200, ' + reply.text.length + ' Zeichen), Benutzer ' + (data.localId || '?') + '.', reply.ms);
+            timedRequest('GET', 'https://firestore.googleapis.com/v1/projects/' + PROJECT + '/databases/(default)/documents/users/' + encodeURIComponent(data.localId),
+              { 'Authorization': 'Bearer ' + data.idToken }, null,
+              function (profileReply) {
+                if (profileReply.outcome !== 'answered') {
+                  logStep('2. Firestore-Profil lesen', false, describeFailure(profileReply), profileReply.ms);
+                } else if (profileReply.status === 200) {
+                  logStep('2. Firestore-Profil lesen', true, 'Profil vorhanden (HTTP 200).', profileReply.ms);
+                } else if (profileReply.status === 404) {
+                  logStep('2. Firestore-Profil lesen', true, 'Noch kein Profil vorhanden (HTTP 404) – wird bei der ersten Anmeldung automatisch angelegt.', profileReply.ms);
+                } else {
+                  logStep('2. Firestore-Profil lesen', false, 'HTTP ' + profileReply.status + ' – bei 403 bitte prüfen, ob die aktuellen Firestore-Regeln veröffentlicht sind.', profileReply.ms);
+                }
+                logStep('3. Ergebnis', true, 'Anmeldetest abgeschlossen. Bitte Ergebnis kopieren und weitergeben.', null);
+                button.disabled = false;
+              });
+          });
+      });
 
       if (window.location.protocol === 'file:') {
         summary.innerHTML = '<span class="diag-fail">Lokale Datei erkannt.</span> Bitte den Verbindungstest ausschließlich über https://wehres.github.io/ISSeL-Intranet/diagnose.html öffnen.';
