@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "content:build": "node tools/build_web_content.mjs",
     "seed:build": "node tools/build_firestore_seed.mjs",
     "seed:import": "node tools/import_firestore_seed.mjs"
   },

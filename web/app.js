@@ -1,4 +1,5 @@
 import { firebaseConfig } from './firebase-config.js';
+import { qmContent } from './content-data.js';
 
 window.qmIntranetReady = true;
 
@@ -9,7 +10,9 @@ const SESSION_KEY = 'issel-qm-session';
 const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Security', k9: 'K9' };
 const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
 const PROFILE_WATCHDOG_MS = 10000;
-const state = { scope: 'all', selected: null, query: '', view: 'processes', processes: [], documents: [], areas: ['shared'] };
+const baselineProcesses = qmContent.processes.map(process => ({ ...process }));
+const baselineDocuments = qmContent.documents.map(documentData => ({ ...documentData }));
+const state = { scope: 'all', selected: null, query: '', view: 'processes', processes: baselineProcesses, documents: baselineDocuments, areas: ['shared', 'security', 'k9'] };
 const isLocalPreview = window.location.protocol === 'file:';
 let activeUiUserId = null;
 
@@ -35,6 +38,15 @@ const safeUrl = value => /^https:\/\//i.test(value || '') ? value : '';
 const visibleForScope = item => state.scope === 'all' || item.area === 'shared' || item.area === state.scope;
 const matches = item => `${item.id} ${item.title} ${item.type}`.toLocaleLowerCase('de').includes(state.query);
 const visibleProcesses = () => state.processes.filter(visibleForScope);
+
+function mergeByAreaAndId(baseline, remote) {
+  const merged = new Map(baseline.map(item => [`${item.area}/${item.id}`, item]));
+  remote.forEach(item => {
+    const key = `${item.area}/${item.id}`;
+    merged.set(key, { ...(merged.get(key) || {}), ...item });
+  });
+  return [...merged.values()].sort((a, b) => a.id.localeCompare(b.id, 'de'));
+}
 
 function showMessage(message = '') {
   appMessage.textContent = message;
@@ -334,15 +346,15 @@ function showAuthenticatedShell(user) {
   state.scope = 'all';
   state.selected = null;
   state.query = '';
-  state.processes = [];
-  state.documents = [];
+  state.processes = baselineProcesses;
+  state.documents = baselineDocuments;
   document.getElementById('account-name').textContent = user.uid === INITIAL_ADMIN_UID
     ? `${user.email} · Administration`
     : user.email;
   loginError.hidden = true;
   loginView.hidden = true;
   appView.hidden = false;
-  showMessage('Anmeldung erfolgreich. QM-Daten werden aus Firestore geladen …');
+  showMessage('Anmeldung erfolgreich. Prozesslandschaft und Dokumentverknüpfungen werden geladen …');
   render();
 }
 
@@ -387,11 +399,14 @@ async function openIntranet(user) {
   document.getElementById('import-link').hidden = !roles.includes('admin');
   showMessage('Daten werden geladen …');
   const content = await Promise.all(state.areas.map(area => loadAreaContent(user, area)));
-  state.processes = content.flatMap(item => item.processes).sort((a, b) => a.id.localeCompare(b.id, 'de'));
-  state.documents = content.flatMap(item => item.documents).sort((a, b) => a.id.localeCompare(b.id, 'de'));
+  state.processes = mergeByAreaAndId(baselineProcesses, content.flatMap(item => item.processes));
+  state.documents = mergeByAreaAndId(baselineDocuments, content.flatMap(item => item.documents));
   loginView.hidden = true;
   appView.hidden = false;
-  showMessage(state.processes.length ? '' : 'Es sind noch keine QM-Prozesse im Datenbestand hinterlegt.');
+  const linkedDocuments = state.documents.filter(documentData => safeUrl(documentData.href)).length;
+  showMessage(linkedDocuments
+    ? ''
+    : 'Prozesse, Flussdiagramme und Dokumentzuordnungen sind verfügbar. Freigegebene Downloadlinks werden noch in Firestore hinterlegt.');
   render();
   } finally {
     window.clearTimeout(profileWatchdog);

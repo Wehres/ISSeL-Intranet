@@ -5,7 +5,7 @@ Das veröffentlichte Intranet befindet sich im Ordner `web`. Es wird als statisc
 ## Sicherheitsmodell
 
 - Die Dokumentdateien bleiben als gelenkte Originale in OneDrive oder SharePoint. In Firestore liegen nur Dokumentinformationen und der jeweils freigegebene HTTPS-Link.
-- Der GitHub-Pages-Code enthält keine Dokumentdaten und keine Downloadlinks.
+- Der GitHub-Pages-Code enthält den Grundbestand der Prozessbeschreibungen, Flussdiagramme und Dokumentzuordnungen, damit diese Inhalte direkt nach der Anmeldung verfügbar sind. Er enthält keine QM-Dateien und keine internen Downloadlinks.
 - Beim ersten Login erhält ein in Firebase angelegter Benutzer automatisch ein aktives Leserprofil mit Zugriff auf alle QM-Bereiche. Der hinterlegte erste Administrator wird beim ersten Login automatisch als `admin` angelegt. Ein Leserprofil enthält `displayName` (Text), `active` (Boolean `true`), `roles` (Array: `reader`) und `areas` (Array: `all`).
 - Security- und K9-Inhalte liegen getrennt in `areas/security` bzw. `areas/k9`; Verbundinhalte in `areas/shared`.
 
