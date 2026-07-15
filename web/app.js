@@ -1,12 +1,11 @@
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js';
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js';
 import { firebaseConfig } from './firebase-config.js';
 
 window.qmIntranetReady = true;
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
 const FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
+const AUTH_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
+const TOKEN_URL = 'https://securetoken.googleapis.com/v1/token';
+const SESSION_KEY = 'issel-qm-session';
 const labels = { all: 'Freigegebene Bereiche', shared: 'Verbund', security: 'Security', k9: 'K9' };
 const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
 const PROFILE_WATCHDOG_MS = 10000;
@@ -48,12 +47,111 @@ function setLoginStatus(message, busy = false) {
   loginButton.textContent = busy ? 'Anmeldung läuft …' : 'Anmelden';
 }
 
-function withTimeout(promise, milliseconds = 12000) {
-  let timeout;
-  const timeoutPromise = new Promise((_, reject) => {
-    timeout = window.setTimeout(() => reject({ code: 'firestore/timeout' }), milliseconds);
+function normalizeAuthError(rawCode = '') {
+  const code = rawCode.split(' : ')[0];
+  const codes = {
+    EMAIL_NOT_FOUND: 'auth/invalid-credential',
+    INVALID_PASSWORD: 'auth/invalid-credential',
+    INVALID_LOGIN_CREDENTIALS: 'auth/invalid-credential',
+    USER_DISABLED: 'auth/user-disabled',
+    TOO_MANY_ATTEMPTS_TRY_LATER: 'auth/too-many-requests',
+    TOKEN_EXPIRED: 'auth/session-expired',
+    INVALID_REFRESH_TOKEN: 'auth/session-expired',
+    USER_NOT_FOUND: 'auth/session-expired'
+  };
+  return codes[code] || `auth/${code.toLocaleLowerCase('en').replaceAll('_', '-')}`;
+}
+
+async function fetchJson(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : {};
+    if (!response.ok) {
+      const error = new Error(payload?.error?.message || `HTTP-Fehler ${response.status}`);
+      error.code = normalizeAuthError(payload?.error?.message || `HTTP_${response.status}`);
+      throw error;
+    }
+    return payload;
+  } catch (error) {
+    if (error?.code) throw error;
+    const networkError = new Error('Die verschlüsselte Verbindung zu Firebase konnte nicht hergestellt werden.');
+    networkError.code = 'auth/network-request-failed';
+    throw networkError;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function storeSession(user) {
+  try {
+    window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(user));
+  } catch {
+    // Die aktuelle Anmeldung funktioniert auch ohne Sitzungswiederherstellung.
+  }
+}
+
+function readSession() {
+  try {
+    const value = window.sessionStorage.getItem(SESSION_KEY);
+    return value ? JSON.parse(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearSession() {
+  try {
+    window.sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    // Keine weitere Aktion erforderlich.
+  }
+}
+
+async function signInWithPassword(email, password) {
+  const payload = await fetchJson(`${AUTH_BASE_URL}/accounts:signInWithPassword?key=${encodeURIComponent(firebaseConfig.apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, returnSecureToken: true })
   });
-  return Promise.race([promise, timeoutPromise]).finally(() => window.clearTimeout(timeout));
+  const user = {
+    uid: payload.localId,
+    email: payload.email,
+    idToken: payload.idToken,
+    refreshToken: payload.refreshToken,
+    expiresAt: Date.now() + (Number(payload.expiresIn || 3600) * 1000)
+  };
+  storeSession(user);
+  return user;
+}
+
+async function getValidIdToken(user) {
+  if (user.idToken && user.expiresAt > Date.now() + 60000) return user.idToken;
+  if (!user.refreshToken) throw { code: 'auth/session-expired' };
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: user.refreshToken });
+  const payload = await fetchJson(`${TOKEN_URL}?key=${encodeURIComponent(firebaseConfig.apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  user.uid = payload.user_id || user.uid;
+  user.idToken = payload.id_token;
+  user.refreshToken = payload.refresh_token || user.refreshToken;
+  user.expiresAt = Date.now() + (Number(payload.expires_in || 3600) * 1000);
+  storeSession(user);
+  return user.idToken;
+}
+
+function signOutCurrentUser() {
+  clearSession();
+  activeUiUserId = null;
+  appView.hidden = true;
+  loginView.hidden = false;
+  loginForm.reset();
+  loginError.hidden = true;
+  setLoginStatus('Anmeldung bereit.');
 }
 
 function decodeFirestoreValue(value = {}) {
@@ -90,8 +188,7 @@ async function firestoreRequest(user, relativePath, options = {}) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 12000);
   try {
-    const cachedToken = user.accessToken || user.stsTokenManager?.accessToken;
-    const token = cachedToken || await withTimeout(user.getIdToken(), 5000);
+    const token = await getValidIdToken(user);
     const response = await fetch(`${FIRESTORE_BASE_URL}/${relativePath}`, {
       ...options,
       signal: controller.signal,
@@ -266,7 +363,7 @@ async function openIntranet(user) {
     });
   }
   if (profile.active !== true) {
-    await signOut(auth);
+    signOutCurrentUser();
     throw new Error('Dieses Benutzerkonto ist für das QM-Intranet nicht aktiv.');
   }
   const roles = Array.isArray(profile.roles) ? profile.roles : [];
@@ -310,6 +407,8 @@ function errorMessage(error) {
     'auth/unauthorized-domain': 'Diese Internetadresse ist in Firebase noch nicht für die Anmeldung freigegeben.',
     'auth/network-request-failed': 'Die Verbindung zu Firebase konnte nicht hergestellt werden.',
     'auth/too-many-requests': 'Zu viele Anmeldeversuche. Bitte später erneut versuchen.',
+    'auth/user-disabled': 'Dieses Benutzerkonto wurde in Firebase deaktiviert.',
+    'auth/session-expired': 'Die Sitzung ist abgelaufen. Bitte erneut anmelden.',
     'permission-denied': 'Der Zugriff wurde durch die Berechtigungsregeln abgelehnt.',
     'firestore/timeout': 'Firestore antwortet nicht. Bitte prüfen, ob die Firestore-Regeln veröffentlicht wurden und die Datenbank erreichbar ist.',
     'firestore/network': 'Die Firestore-HTTPS-Verbindung konnte nicht hergestellt werden.'
@@ -323,8 +422,8 @@ loginForm.addEventListener('submit', async event => {
   setLoginStatus('Anmeldung wird geprüft …', true);
   const formData = new FormData(loginForm);
   try {
-    const credential = await signInWithEmailAndPassword(auth, formData.get('email'), formData.get('password'));
-    await activateAuthenticatedUser(credential.user);
+    const user = await signInWithPassword(formData.get('email'), formData.get('password'));
+    await activateAuthenticatedUser(user);
   } catch (error) {
     loginError.textContent = errorMessage(error);
     loginError.hidden = false;
@@ -332,7 +431,7 @@ loginForm.addEventListener('submit', async event => {
   }
 });
 
-document.getElementById('logout').addEventListener('click', () => signOut(auth));
+document.getElementById('logout').addEventListener('click', signOutCurrentUser);
 document.querySelectorAll('[data-scope]').forEach(button => button.addEventListener('click', () => {
   state.scope = button.dataset.scope;
   state.selected = null;
@@ -348,7 +447,7 @@ document.getElementById('search').addEventListener('input', event => {
   renderLibrary();
 });
 
-onAuthStateChanged(auth, async user => {
+async function initializeSession() {
   if (isLocalPreview) {
     appView.hidden = true;
     loginView.hidden = false;
@@ -357,6 +456,7 @@ onAuthStateChanged(auth, async user => {
     setLoginStatus('Anmeldung in der lokalen Vorschau deaktiviert.');
     return;
   }
+  const user = readSession();
   if (!user) {
     activeUiUserId = null;
     appView.hidden = true;
@@ -364,8 +464,21 @@ onAuthStateChanged(auth, async user => {
     setLoginStatus('Anmeldung bereit.');
     return;
   }
-  await activateAuthenticatedUser(user);
-});
+  try {
+    await getValidIdToken(user);
+    await activateAuthenticatedUser(user);
+  } catch (error) {
+    clearSession();
+    activeUiUserId = null;
+    appView.hidden = true;
+    loginView.hidden = false;
+    loginError.textContent = errorMessage(error);
+    loginError.hidden = false;
+    setLoginStatus('Bitte erneut anmelden.');
+  }
+}
+
+initializeSession();
 
 window.addEventListener('error', event => {
   if (!loginView.hidden) {
