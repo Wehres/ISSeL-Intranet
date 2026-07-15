@@ -140,23 +140,6 @@ function clearSession() {
   }
 }
 
-async function signInWithPassword(email, password) {
-  const payload = await fetchJson(`${AUTH_BASE_URL}/accounts:signInWithPassword?key=${encodeURIComponent(firebaseConfig.apiKey)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password, returnSecureToken: true })
-  });
-  const user = {
-    uid: payload.localId,
-    email: payload.email,
-    idToken: payload.idToken,
-    refreshToken: payload.refreshToken,
-    expiresAt: Date.now() + (Number(payload.expiresIn || 3600) * 1000)
-  };
-  storeSession(user);
-  return user;
-}
-
 async function getValidIdToken(user) {
   if (user.idToken && user.expiresAt > Date.now() + 60000) return user.idToken;
   if (!user.refreshToken) throw { code: 'auth/session-expired' };
@@ -181,6 +164,7 @@ function signOutCurrentUser() {
   loginView.hidden = false;
   loginForm.reset();
   loginError.hidden = true;
+  resetLoginLog();
   setLoginStatus('Anmeldung bereit.');
 }
 
@@ -440,18 +424,110 @@ function errorMessage(error) {
   return messages[error.code] || error.message || 'Anmeldung nicht möglich.';
 }
 
-loginForm.addEventListener('submit', async event => {
+const loginLog = document.getElementById('login-log');
+let loginTicker = null;
+let loginStartedAt = 0;
+
+function resetLoginLog() {
+  loginLog.textContent = '';
+  loginLog.hidden = true;
+}
+
+function logLoginStep(text) {
+  const line = document.createElement('div');
+  line.textContent = `${((Date.now() - loginStartedAt) / 1000).toFixed(1)} s · ${text}`;
+  loginLog.appendChild(line);
+  loginLog.hidden = false;
+}
+
+function stopLoginTicker() {
+  if (loginTicker) {
+    window.clearInterval(loginTicker);
+    loginTicker = null;
+  }
+}
+
+function failLogin(message) {
+  stopLoginTicker();
+  loginError.textContent = message;
+  loginError.hidden = false;
+  setLoginStatus('Anmeldung nicht möglich. Bitte Meldung oben beachten.');
+}
+
+// Bewusst derselbe Aufbau wie der funktionierende Anmeldetest der Diagnoseseite:
+// klassischer XMLHttpRequest mit Rückrufen statt einer Promise-Kette, damit die
+// Anmeldung und der Test denselben Codeweg nehmen.
+function directSignIn(email, password, attempt) {
+  const retryOrFail = reason => {
+    logLoginStep(`${reason}.`);
+    if (attempt === 1) directSignIn(email, password, 2);
+    else failLogin('Die Verbindung zu Firebase konnte nicht hergestellt werden. Bitte den Verbindungstest unter dem Anmeldebutton öffnen.');
+  };
+  logLoginStep(attempt === 1 ? 'Anmeldeanfrage wird gesendet …' : 'Zweiter Versuch wird gesendet …');
+  const request = new XMLHttpRequest();
+  request.open('POST', `${AUTH_BASE_URL}/accounts:signInWithPassword?key=${encodeURIComponent(firebaseConfig.apiKey)}`, true);
+  request.timeout = 12000;
+  request.setRequestHeader('Content-Type', 'application/json');
+  request.onload = () => {
+    if (request.status === 0) return retryOrFail('Verbindung blockiert');
+    let payload = {};
+    try {
+      payload = JSON.parse(request.responseText || '{}');
+    } catch {
+      payload = {};
+    }
+    if (request.status !== 200) {
+      logLoginStep(`Firebase lehnt ab (HTTP ${request.status}).`);
+      const error = new Error(payload?.error?.message || `HTTP-Fehler ${request.status}`);
+      error.code = normalizeAuthError(payload?.error?.message || `HTTP_${request.status}`);
+      failLogin(errorMessage(error));
+      return;
+    }
+    if (!payload.idToken) {
+      logLoginStep('Antwort ohne Sicherheitstoken empfangen.');
+      failLogin('Die Firebase-Antwort war unvollständig. Vermutlich verändert ein Sicherheitsprogramm die Antwort.');
+      return;
+    }
+    logLoginStep(`Antwort mit Sicherheitstoken empfangen (HTTP 200, ${(request.responseText || '').length} Zeichen).`);
+    stopLoginTicker();
+    const user = {
+      uid: payload.localId,
+      email: payload.email,
+      idToken: payload.idToken,
+      refreshToken: payload.refreshToken,
+      expiresAt: Date.now() + (Number(payload.expiresIn || 3600) * 1000)
+    };
+    storeSession(user);
+    logLoginStep('Anmeldung erfolgreich. Intranet wird geöffnet …');
+    activateAuthenticatedUser(user).catch(error => failLogin(errorMessage(error)));
+  };
+  request.onerror = () => retryOrFail('Netzwerkfehler');
+  request.ontimeout = () => retryOrFail('Keine Antwort innerhalb von 12 Sekunden');
+  request.send(JSON.stringify({ email, password, returnSecureToken: true }));
+}
+
+loginForm.addEventListener('submit', event => {
   event.preventDefault();
   loginError.hidden = true;
-  setLoginStatus('Direkte HTTPS-Anmeldung wird geprüft …', true);
+  resetLoginLog();
+  loginStartedAt = Date.now();
+  setLoginStatus('Direkte HTTPS-Anmeldung wird geprüft … (0 s)', true);
+  stopLoginTicker();
+  loginTicker = window.setInterval(() => {
+    if (!loginButton.disabled || !appView.hidden) {
+      stopLoginTicker();
+      return;
+    }
+    loginStatus.textContent = `Direkte HTTPS-Anmeldung wird geprüft … (${Math.round((Date.now() - loginStartedAt) / 1000)} s)`;
+  }, 1000);
   const formData = new FormData(loginForm);
-  try {
-    const user = await signInWithPassword(formData.get('email'), formData.get('password'));
-    await activateAuthenticatedUser(user);
-  } catch (error) {
-    loginError.textContent = errorMessage(error);
-    loginError.hidden = false;
-    setLoginStatus('Anmeldung nicht möglich. Bitte Meldung oben beachten.');
+  directSignIn(String(formData.get('email') || '').trim(), String(formData.get('password') || ''), 1);
+});
+
+window.addEventListener('unhandledrejection', event => {
+  if (!loginView.hidden) {
+    const reason = event.reason || {};
+    failLogin(`Technischer Fehler: ${reason.message || reason.code || 'Unbekannter Fehler in der Anmeldung.'}`);
   }
 });
 
