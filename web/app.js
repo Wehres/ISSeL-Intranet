@@ -12,6 +12,7 @@ const INITIAL_ADMIN_UID = 'io63zzdfZ7ZkEcaIZIPOv23WV7l2';
 const PROFILE_WATCHDOG_MS = 10000;
 const state = { scope: 'all', selected: null, query: '', view: 'processes', processes: [], documents: [], areas: ['shared'] };
 const isLocalPreview = window.location.protocol === 'file:';
+let activeUiUserId = null;
 
 const loginView = document.getElementById('login-view');
 const appView = document.getElementById('app');
@@ -290,6 +291,19 @@ async function openIntranet(user) {
   }
 }
 
+async function activateAuthenticatedUser(user) {
+  if (activeUiUserId === user.uid) return;
+  activeUiUserId = user.uid;
+  showAuthenticatedShell(user);
+  try {
+    await openIntranet(user);
+  } catch (error) {
+    loginView.hidden = true;
+    appView.hidden = false;
+    showMessage(`Anmeldung erfolgreich, aber QM-Daten konnten nicht geladen werden: ${errorMessage(error)}`);
+  }
+}
+
 function errorMessage(error) {
   const messages = {
     'auth/invalid-credential': 'E-Mail-Adresse oder Passwort sind nicht korrekt.',
@@ -309,8 +323,8 @@ loginForm.addEventListener('submit', async event => {
   setLoginStatus('Anmeldung wird geprüft …', true);
   const formData = new FormData(loginForm);
   try {
-    await signInWithEmailAndPassword(auth, formData.get('email'), formData.get('password'));
-    setLoginStatus('Anmeldung erfolgreich. Berechtigungen werden geladen …', true);
+    const credential = await signInWithEmailAndPassword(auth, formData.get('email'), formData.get('password'));
+    await activateAuthenticatedUser(credential.user);
   } catch (error) {
     loginError.textContent = errorMessage(error);
     loginError.hidden = false;
@@ -344,19 +358,13 @@ onAuthStateChanged(auth, async user => {
     return;
   }
   if (!user) {
+    activeUiUserId = null;
     appView.hidden = true;
     loginView.hidden = false;
     setLoginStatus('Anmeldung bereit.');
     return;
   }
-  showAuthenticatedShell(user);
-  try {
-    await openIntranet(user);
-  } catch (error) {
-    loginView.hidden = true;
-    appView.hidden = false;
-    showMessage(`Anmeldung erfolgreich, aber QM-Daten konnten nicht geladen werden: ${errorMessage(error)}`);
-  }
+  await activateAuthenticatedUser(user);
 });
 
 window.addEventListener('error', event => {
