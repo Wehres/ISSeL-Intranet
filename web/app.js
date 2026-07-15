@@ -62,26 +62,46 @@ function normalizeAuthError(rawCode = '') {
   return codes[code] || `auth/${code.toLocaleLowerCase('en').replaceAll('_', '-')}`;
 }
 
+function xhrJson(url, options = {}, timeoutMs = 12000) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(options.method || 'GET', url, true);
+    request.timeout = timeoutMs;
+    Object.entries(options.headers || {}).forEach(([name, value]) => request.setRequestHeader(name, value));
+    request.onload = () => {
+      if (request.status === 0) {
+        reject({ code: 'xhr/network' });
+        return;
+      }
+      let payload = {};
+      try {
+        payload = request.responseText ? JSON.parse(request.responseText) : {};
+      } catch {
+        payload = {};
+      }
+      resolve({ ok: request.status >= 200 && request.status < 300, status: request.status, payload });
+    };
+    request.onerror = () => reject({ code: 'xhr/network' });
+    request.ontimeout = () => reject({ code: 'xhr/timeout' });
+    const body = options.body instanceof URLSearchParams ? options.body.toString() : (options.body || null);
+    request.send(body);
+  });
+}
+
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    const text = await response.text();
-    const payload = text ? JSON.parse(text) : {};
+    const response = await xhrJson(url, options, timeoutMs);
     if (!response.ok) {
-      const error = new Error(payload?.error?.message || `HTTP-Fehler ${response.status}`);
-      error.code = normalizeAuthError(payload?.error?.message || `HTTP_${response.status}`);
+      const error = new Error(response.payload?.error?.message || `HTTP-Fehler ${response.status}`);
+      error.code = normalizeAuthError(response.payload?.error?.message || `HTTP_${response.status}`);
       throw error;
     }
-    return payload;
+    return response.payload;
   } catch (error) {
-    if (error?.code) throw error;
+    if (error?.code && !error.code.startsWith('xhr/')) throw error;
     const networkError = new Error('Die verschlüsselte Verbindung zu Firebase konnte nicht hergestellt werden.');
     networkError.code = 'auth/network-request-failed';
     throw networkError;
-  } finally {
-    window.clearTimeout(timeout);
   }
 }
 
@@ -185,37 +205,31 @@ function encodeFirestoreFields(data) {
 }
 
 async function firestoreRequest(user, relativePath, options = {}) {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 12000);
   try {
     const token = await getValidIdToken(user);
-    const response = await fetch(`${FIRESTORE_BASE_URL}/${relativePath}`, {
+    const response = await xhrJson(`${FIRESTORE_BASE_URL}/${relativePath}`, {
       ...options,
-      signal: controller.signal,
       headers: {
         Authorization: `Bearer ${token}`,
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
         ...(options.headers || {})
       }
     });
-    const text = await response.text();
-    const payload = text ? JSON.parse(text) : {};
     if (!response.ok) {
-      const error = new Error(payload?.error?.message || `Firestore-Fehler ${response.status}`);
+      const error = new Error(response.payload?.error?.message || `Firestore-Fehler ${response.status}`);
       error.code = response.status === 403 ? 'permission-denied'
         : response.status === 404 ? 'not-found'
         : `firestore/http-${response.status}`;
       throw error;
     }
-    return payload;
+    return response.payload;
   } catch (error) {
-    if (error?.name === 'AbortError') throw { code: 'firestore/timeout' };
+    if (error?.code === 'xhr/timeout') throw { code: 'firestore/timeout' };
+    if (error?.code === 'xhr/network') throw { code: 'firestore/network' };
     if (error?.code) throw error;
     const networkError = new Error('Die Firestore-HTTPS-Verbindung konnte nicht hergestellt werden.');
     networkError.code = 'firestore/network';
     throw networkError;
-  } finally {
-    window.clearTimeout(timeout);
   }
 }
 
@@ -419,7 +433,7 @@ function errorMessage(error) {
 loginForm.addEventListener('submit', async event => {
   event.preventDefault();
   loginError.hidden = true;
-  setLoginStatus('Anmeldung wird geprüft …', true);
+  setLoginStatus('Direkte HTTPS-Anmeldung wird geprüft …', true);
   const formData = new FormData(loginForm);
   try {
     const user = await signInWithPassword(formData.get('email'), formData.get('password'));
